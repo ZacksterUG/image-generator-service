@@ -47,6 +47,27 @@ class RabbitMQQueue(QueueBase):
         self._connect()
         self._declare_queue()
 
+    def _ensure_channel(self):
+        """Гарантирует, что соединение и канал открыты. Переподключается при необходимости."""
+        try:
+            # Проверяем соединение
+            if not self._connection or self._connection.is_closed:
+                logger.debug("RabbitMQ connection is closed or missing. Reconnecting...")
+                self._connect()
+                self._declare_queue()
+                return
+
+            # Проверяем канал
+            if not self._channel or self._channel.is_closed:
+                logger.debug("RabbitMQ channel is closed or missing. Reinitializing channel...")
+                self._channel = self._connection.channel()
+                self._channel.basic_qos(prefetch_count=self._prefetch_count)
+                self._declare_queue()
+
+        except Exception as e:
+            logger.error(f"Failed to ensure RabbitMQ channel: {e}")
+            raise
+
     def _connect(self):
         """Устанавливает соединение и канал с RabbitMQ."""
         credentials = PlainCredentials(self._username, self._password)
@@ -75,6 +96,7 @@ class RabbitMQQueue(QueueBase):
     def declare_queue(self, queue: str) -> bool:
         """Объявляет новую очередь (редко используется, если экземпляр привязан к одной очереди)."""
         try:
+            self._ensure_channel()
             self._channel.queue_declare(
                 queue=queue,
                 durable=self._durable,
@@ -89,6 +111,7 @@ class RabbitMQQueue(QueueBase):
     def push(self, queue: str, data: Any) -> bool:
         """Отправляет сообщение в указанную очередь."""
         try:
+            self._ensure_channel()
             body = json.dumps(data, ensure_ascii=False).encode("utf-8")
             self._channel.basic_publish(
                 exchange="",
@@ -108,10 +131,8 @@ class RabbitMQQueue(QueueBase):
 
     def pop(self) -> Optional[Message]:
         """Извлекает одно сообщение без подтверждения."""
-        if not self._channel:
-            return None
-
         try:
+            self._ensure_channel()
             method_frame, header_frame, body = self._channel.basic_get(
                 queue=self._queue_name,
                 auto_ack=False  # важно: не подтверждать автоматически
@@ -133,6 +154,7 @@ class RabbitMQQueue(QueueBase):
     def ack(self, delivery_tag: Any) -> bool:
         """Подтверждает обработку сообщения."""
         try:
+            self._ensure_channel()
             self._channel.basic_ack(delivery_tag=delivery_tag)
             return True
         except AMQPError as e:
@@ -142,6 +164,7 @@ class RabbitMQQueue(QueueBase):
     def nack(self, delivery_tag: Any, requeue: bool = True) -> bool:
         """Отклоняет сообщение."""
         try:
+            self._ensure_channel()
             self._channel.basic_nack(delivery_tag=delivery_tag, requeue=requeue)
             return True
         except AMQPError as e:
@@ -151,6 +174,7 @@ class RabbitMQQueue(QueueBase):
     def empty(self) -> bool:
         """Проверяет, пуста ли очередь (приблизительно)."""
         try:
+            self._ensure_channel()
             method = self._channel.queue_declare(
                 queue=self._queue_name, passive=True
             )
@@ -172,22 +196,13 @@ class RabbitMQQueue(QueueBase):
             dict: {"error": bool, "message": str}
         """
         try:
-            # Проверяем, открыто ли соединение и канал
-            if not self._connection or self._connection.is_closed:
-                self._connect()
-                self._declare_queue()
-                return {"error": False, "message": "Reconnected successfully"}
-
-            if not self._channel or self._channel.is_closed:
-                self._channel = self._connection.channel()
-                self._channel.basic_qos(prefetch_count=self._prefetch_count)
-                self._declare_queue()
-                return {"error": False, "message": "Channel reinitialized"}
-
-            # Выполняем лёгкую операцию для проверки работоспособности
-            # passive=True — не создаёт очередь, только проверяет существование
+            self._ensure_channel()
             self._channel.queue_declare(queue=self._queue_name, passive=True)
             return {"error": False, "message": "OK"}
+        except Exception as e:
+            error_msg = f"RabbitMQ ping failed: {str(e)}"
+            logger.error(error_msg)
+            return {"error": True, "message": error_msg}
 
         except Exception as e:
             error_msg = f"RabbitMQ ping failed: {str(e)}"
