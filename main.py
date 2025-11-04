@@ -97,6 +97,8 @@ def process_queue(
                         "image_b64": None,
                         "shape": None,
                         "error": True,
+                        "code": "1", # Неизвестный класс
+                        "class": None,
                         "message": 'Unknown received class'
                     }
 
@@ -112,10 +114,11 @@ def process_queue(
                     continue
 
                 noise = np.random.randn(1, 3, 64, 64).astype(np.float32)
-                image_array = model_facade.generate_by_class(relevant_class, noise)[0]
+                image_array = model_facade.generate_by_class(relevant_class, noise)[0] # 64 x 64 x 3
+                image_uint8 = (image_array * 255).astype(np.uint8)
 
                 # Сериализуем ndarray (пример для 3x64x64)
-                image_bytes = image_array.tobytes()
+                image_bytes = image_uint8.tobytes()
                 image_b64 = base64.b64encode(image_bytes).decode('utf-8')
 
                 result_payload = {
@@ -123,7 +126,8 @@ def process_queue(
                     "image_b64": image_b64,
                     "shape": list(image_array.shape),
                     "error": False,
-                    "message": 'ok'
+                    "message": 'ok',
+                    "class": relevant_class
                 }
 
                 # Отправляем в очередь ответов
